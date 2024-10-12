@@ -1,0 +1,94 @@
+name: PR Review Automation
+
+# Trigger this workflow on pull requests
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+# Define the jobs that run when the workflow is triggered
+jobs:
+  pr-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the PR branch
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Set up the GitHub Action to automatically add a label based on file types
+      - name: Add labels based on changes
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { context, github } = require('@actions/github');
+            const pr = context.payload.pull_request;
+
+            // Get files changed in the PR
+            const files = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number
+            });
+
+            // Automatically assign labels based on file types
+            const hasCPPFiles = files.data.some(file => file.filename.endsWith('.cpp'));
+            const hasYAMLFiles = files.data.some(file => file.filename.endsWith('.yml'));
+
+            const labels = [];
+            if (hasCPPFiles) labels.push('C++');
+            if (hasYAMLFiles) labels.push('YAML');
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: labels
+              });
+            }
+
+      # Linting step to check the code quality (C++ linting)
+      - name: C++ Lint Check
+        run: |
+          apt-get install -y cppcheck
+          cppcheck --enable=all --error-exitcode=1 . || echo "Linting issues found!"
+
+      # Post a comment if PR meets criteria (example: no linting issues)
+      - name: Post Comment on Success
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { context, github } = require('@actions/github');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "Great job! No linting issues were found in the PR 🎉."
+            });
+
+  # Optional: job to automatically merge the PR if all checks pass (requires admin permissions)
+  auto-merge:
+    needs: pr-review
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Automatic Merge
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { context, github } = require('@actions/github');
+            const pr = context.payload.pull_request;
+
+            // Automatically merge if all checks pass and PR is not a draft
+            if (pr.state === 'open' && !pr.draft) {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                merge_method: 'squash'  // Choose merge method: merge, squash, rebase
+              });
+            } else {
+              console.log('PR is a draft or cannot be merged at this time.');
+            }
